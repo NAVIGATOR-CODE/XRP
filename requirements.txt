@@ -4,3 +4,5 @@ numpy
 requests
 google-genai
 plotly
+gspread
+google-auth
