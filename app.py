@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import requests
 from google import genai
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(
     page_title="My AI Agent Portal",
@@ -11,6 +13,66 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ---------------------------------------------------------
+# 1. 구글 시트 연동 및 데이터 자동 기록 함수
+# ---------------------------------------------------------
+def save_data_to_google_sheet(df_latest):
+    try:
+        # Streamlit Secrets에 저장된 구글 서비스 계정 인증 정보 불러오기
+        if "gcp_service_account" not in st.secrets:
+            return "구글 시트 인증 정보(gcp_service_account)가 Streamlit Secrets에 설정되지 않았습니다."
+        
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        credentials = Credentials.from_service_account_info(credentials_dict, scopes=scopes)
+        gc = gspread.authorize(credentials)
+        
+        # 구글 시트 파일 열기 (이름: 'XRP_Quant_Database')
+        sheet_name = "XRP_Quant_Database"
+        try:
+            spreadsheet = gc.open(sheet_name)
+        except gspread.SpreadsheetNotFound:
+            # 시트가 없으면 자동으로 생성
+            spreadsheet = gc.create(sheet_name)
+            
+        worksheet = spreadsheet.get_worksheet(0)
+        
+        # 첫 행(헤더)이 비어있다면 컬럼 이름 작성
+        if not worksheet.get_all_values():
+            headers = ["date", "close", "volume", "RSI_14", "MFI_14", "OBV", "NVT_Proxy", "Signal"]
+            worksheet.append_row(headers)
+            
+        # 오늘 날짜 데이터 추출 및 포맷팅
+        row_data = [
+            str(df_latest["date"]),
+            float(df_latest["close"]),
+            float(df_latest["volume"]),
+            float(df_latest["RSI_14"]),
+            float(df_latest["MFI_14"]),
+            float(df_latest["OBV"]),
+            float(df_latest["NVT_Proxy"]),
+            str(df_latest["Signal"])
+        ]
+        
+        # 중복 날짜가 아니라면 시트에 행 추가 (Append)
+        existing_records = worksheet.get_all_records()
+        existing_dates = [str(r.get("date")) for r in existing_records]
+        
+        if row_data[0] not in existing_dates:
+            worksheet.append_row(row_data)
+            return f"✅ 구글 시트('{sheet_name}')에 오늘자 데이터가 성공적으로 기록되었습니다!"
+        else:
+            return "📌 오늘자 데이터는 이미 구글 시트에 기록되어 있습니다."
+            
+    except Exception as e:
+        return f"⚠️ 구글 시트 연동 중 오류 발생: {str(e)}"
+
+# ---------------------------------------------------------
+# 2. 수급 지표 계산 함수
+# ---------------------------------------------------------
 def calculate_technicals(df):
     delta = df["close"].diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -38,6 +100,9 @@ def calculate_technicals(df):
     )
     return df
 
+# ---------------------------------------------------------
+# 3. 데이터 수집기
+# ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def fetch_6months_xrp_data():
     kraken_url = "https://api.kraken.com/0/public/OHLC?pair=XRPUSD&interval=1440"
@@ -75,6 +140,9 @@ def fetch_6months_xrp_data():
 
     return df, xrpl_info
 
+# ---------------------------------------------------------
+# 사이드바 및 UI
+# ---------------------------------------------------------
 with st.sidebar:
     st.title("🤖 AI 에이전트 포털")
     agent_menu = st.radio(
@@ -96,11 +164,17 @@ with st.sidebar:
 if agent_menu.startswith("📊 1."):
     st.title("📊 XRP 6개월 수급 & 미래가치 밸류에이션 에이전트")
     
-    with st.spinner("클라우드 서버가 최근 6개월(180일) 시장 데이터와 XRPL 원장을 분석 중입니다..."):
+    with st.spinner("클라우드 서버가 최근 6개월 데이터 분석 및 구글 시트 연동 중입니다..."):
         df, xrpl_info = fetch_6months_xrp_data()
         latest = df.iloc[-1]
         prev_30d = df.iloc[-30]
         price_chg_30d = ((latest["close"] / prev_30d["close"]) - 1) * 100
+        
+        # 구글 드라이브(시트) 자동 기록 실행
+        sheet_msg = save_data_to_google_sheet(latest)
+
+    # 구글 시트 저장 결과 알림 표시
+    st.toast(sheet_msg, icon="📊")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("현재 XRP 가격 (USD)", f"${latest['close']:.4f}", f"{price_chg_30d:+.1f}% (30일 전 대비)")
@@ -110,15 +184,15 @@ if agent_menu.startswith("📊 1."):
 
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["🧮 미래가치 시뮬레이터", "📈 6개월 수급 차트 (OBV/MFI)", "🤖 AI 수석 애널리스트 리포트"])
+    tab1, tab2, tab3 = st.tabs(["🧮 미래가치 시뮬레이터", "📈 6개월 수급 차트 & 구글 시트 연동", "🤖 AI 수석 애널리스트 리포트"])
 
     with tab1:
-        st.subheader("🧮 XRPL 유틸리티(ODL + RLUSD + 기관 락업) 기반 적정가 계산기")
+        st.subheader("🧮 XRPL 유틸리티 기반 적정가 계산기")
         col_a, col_b = st.columns([1, 1])
         
         with col_a:
             odl_vol = st.slider("① 연간 ODL 및 RLUSD 브릿지 결제 볼륨 (조 달러)", 0.5, 30.0, 5.0, step=0.5)
-            velocity = st.slider("② XRP 연간 회전율 (Velocity, 낮을수록 장기보유 증가)", 1, 50, 10)
+            velocity = st.slider("② XRP 연간 회전율 (Velocity)", 1, 50, 10)
             locked_xrp = st.slider("③ 기관 준비금 / AMM 풀 / ETF 락업 물량 (십억 개)", 5.0, 45.0, 20.0, step=1.0)
             rlusd_mcap = st.slider("④ RLUSD 스테이블코인 발행 시가총액 (십억 달러)", 1.0, 100.0, 10.0, step=1.0)
 
@@ -131,12 +205,13 @@ if agent_menu.startswith("📊 1."):
             target_price = required_mcap_b / effective_supply_b
             upside_pct = ((target_price / latest["close"]) - 1) * 100
 
-            st.info(f"📌 **유효 유통 공급량:** 약 **{effective_supply_b:.2f}B XRP** (락업 및 RLUSD 풀 제외)")
-            st.info(f"📌 **요구 네트워크 가치(시총):** **${required_mcap_b:,.1f}B** (연간 {odl_vol}조 달러 처리 기준)")
+            st.info(f"📌 **유효 유통 공급량:** 약 **{effective_supply_b:.2f}B XRP**")
+            st.info(f"📌 **요구 네트워크 가치(시총):** **${required_mcap_b:,.1f}B**")
             st.success(f"### 🎯 시뮬레이션 적정 가치: **${target_price:,.2f}**\n현재가 대비 기대 상승률: **{upside_pct:+,.0f}%**")
 
     with tab2:
-        st.subheader("📈 최근 6개월(180일) 가격 및 OBV 세력 매집선")
+        st.subheader("📈 최근 6개월 수급 차트 및 구글 시트 자동 연동 상태")
+        st.success(sheet_msg)
         st.line_chart(df.set_index("date")[["close"]])
         st.line_chart(df.set_index("date")[["OBV", "OBV_MA20"]])
         
@@ -151,33 +226,21 @@ if agent_menu.startswith("📊 1."):
         
         if st.button("🚀 AI 수석 에이전트 리포트 생성", type="primary"):
             if not api_key:
-                st.warning("왼쪽 사이드바(모바일은 좌측 상단 `>` 버튼)에 Gemini API Key를 먼저 입력해 주세요.")
+                st.warning("왼쪽 사이드바에 Gemini API Key를 먼저 입력해 주세요.")
             else:
-                with st.spinner("Gemini 에이전트가 6개월 수급 데이터와 밸류에이션 모델을 교차 검증 중입니다..."):
+                with st.spinner("Gemini 에이전트가 분석 중입니다..."):
                     summary_payload = {
                         "기간": f"{df['date'].iloc[0]} ~ {latest['date']} (180일)",
-                        "6개월_최고가": df["close"].max(),
-                        "6개월_최저가": df["close"].min(),
                         "현재가": latest["close"],
                         "현재_RSI_14": latest["RSI_14"],
                         "현재_MFI_14": latest["MFI_14"],
                         "현재_수급시그널": latest["Signal"],
-                        "30일전_대비_OBV변화": "상승(유입)" if latest["OBV"] > prev_30d["OBV"] else "하락(이탈)",
-                        "시뮬레이션_목표가": round(target_price, 2),
-                        "가정_ODL볼륨_조달러": odl_vol,
-                        "가정_RLUSD시총_십억달러": rlusd_mcap
+                        "시뮬레이션_목표가": round(target_price, 2)
                     }
                     prompt = f"""
-                    당신은 냉철한 크립토 퀀트 애널리스트이자 온체인 밸류에이션 전문가입니다.
-                    아래는 방금 서버에서 수집한 XRP의 최근 6개월(180일) 수급 지표와 유틸리티 모델($MV=PQ$) 시뮬레이션 값입니다.
-                    
-                    [데이터 요약]: {summary_payload}
-                    [사용자 추가 질문]: {user_question if user_question else '전반적인 수급 및 미래가치 진단'}
-                    
-                    다음 3가지 파트로 나누어 가독성 높게 리포트를 작성해 주세요:
-                    1. **6개월 수급 정밀 진단 (OBV & MFI & RSI 기반)**: 현재 세력/기관 자금이 매집 중인지 분산 중인지 근거와 함께 판독.
-                    2. **미래가치(${target_price:.2f}) 타당성 및 RLUSD/ODL 핵심 트리거**: 설정된 시뮬레이션 목표가에 도달하기 위해 체크해야 할 온체인 선행 지표.
-                    3. **구체적 대응 전략**: 현재 수급 위치에서의 리스크 관리 및 중장기 관점의 행동 지침.
+                    당신은 냉철한 크립토 퀀트 애널리스트입니다. 데이터 요약: {summary_payload}
+                    사용자 질문: {user_question if user_question else '전반적인 수급 및 미래가치 진단'}
+                    1. 수급 진단 (OBV & MFI), 2. 미래가치 타당성, 3. 대응 전략으로 나누어 리포트를 작성하세요.
                     """
                     client = genai.Client(api_key=api_key)
                     response = client.models.generate_content(model="gemini-2.5-pro", contents=prompt)
