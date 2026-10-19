@@ -243,7 +243,7 @@ if agent_menu.startswith("📊 1."):
                     1. 수급 진단 (OBV & MFI), 2. 미래가치 타당성, 3. 대응 전략으로 나누어 리포트를 작성하세요.
                     """
                     client = genai.Client(api_key=api_key)
-                    response = client.models.generate_content(model="gemini-1.5-pro", contents=prompt)
+                    response = client.models.generate_content(model="gemini-1.5-pro-latest", contents=prompt)
                     st.markdown(response.text)
 else:
     st.title(agent_menu)
